@@ -1,20 +1,33 @@
 require("dotenv").config();
 
 const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 const sendMail = require("./mail/mail");
 const app = express();
-const pool = require("./db/config");
+// const pool = require("./db/config");
 const bcrypt = require("bcrypt");
 const { emailTemplate } = require("./utils/template");
 const jwt = require("jsonwebtoken");
 const { isAuthenticated } = require("./middleware/auth");
+const roleBasedAccess = require("./middleware/rbca");
+const connectDb = require("./db/db");
 
+const User = require("./model/user.model");
+
+connectDb();
+// app.use(cors())
+app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 
+app.get("/", (req, res) => {
+  res.send("Welcome to WAKA");
+});
+
 app.post("/register", async (req, res) => {
-  const { email, phone, first_name, password } = req.body;
+  const { email, phone, first_name, password, role } = req.body;
 
   try {
     if (!(email && phone && first_name && password)) {
@@ -22,20 +35,31 @@ app.post("/register", async (req, res) => {
     }
 
     // check if user already exist
-    const user = await pool.query("SELECT * FROM students WHERE email = $1", [
-      email,
-    ]);
-
-    if (user.rows.length > 0) {
+    // const user = await pool.query("SELECT * FROM students WHERE email = $1", [
+    //   email,
+    // ]);
+    const user = await User.findOne({ email });
+    // if (user.rows.length > 0) {
+    //   return res.status(400).json({ message: "User already exist" });
+    // }
+    if (user) {
       return res.status(400).json({ message: "User already exist" });
     }
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const newUser = await pool.query(
-      "INSERT INTO students (email, phone, first_name,password) VALUES($1, $2, $3, $4) RETURNING *",
-      [email, phone, first_name, hashedPassword]
-    );
+    // const newUser = await pool.query(
+    //   "INSERT INTO students (email, phone, first_name,password) VALUES($1, $2, $3, $4) RETURNING *",
+    //   [email, phone, first_name, hashedPassword]
+    // );
+    const newUser = await User.create({
+      email,
+      phone,
+      first_name,
+      password: hashedPassword,
+      role,
+    });
 
     //   await sendMail({
     //       email: newUser.rows[0].email,
@@ -43,8 +67,16 @@ app.post("/register", async (req, res) => {
     //       html: await emailTemplate(newUser.rows[0].first_name, newUser.rows[0].email, newUser.rows[0].phone),
     //   });
 
+    // const token = jwt.sign(
+    //   { id: newUser.rows[0].id, email },
+    //   process.env.TOKEN_KEY || "secret",
+    //   {
+    //     expiresIn: "3m",
+    //   }
+    // );
+
     const token = jwt.sign(
-      { id: newUser.rows[0].id, email },
+      { id: newUser.id, email },
       process.env.TOKEN_KEY || "secret",
       {
         expiresIn: "3m",
@@ -68,22 +100,47 @@ app.post("/login", async (req, res) => {
       return res.status(400).json({ message: "All input is required" });
     }
 
-    const user = await pool.query("SELECT * FROM students WHERE email = $1", [
-      email,
-    ]);
+    const user = await User.findOne({ email });
+    // const user = await pool.query("SELECT * FROM students WHERE email = $1", [
+    //   email,
+    // ]);
 
-    if (user.rows.length <= 0) {
-      return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    const validPassword = await bcrypt.compare(password, user.rows[0].password);
+    // if (user.rows.length <= 0) {
+    //   return res.status(404).json({ message: "User not found" });
+    // }
+
+    // const validPassword = await bcrypt.compare(password, user.rows[0].password);
+    const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
+    // const refresh_token = jwt.sign(
+    //   { id: user.rows[0].id, email },
+    //   process.env.REFRESH_TOKEN || "refreshsecret",
+    //   {
+    //     expiresIn: "1d",
+    //   }
+    // );
+
+    // const token = jwt.sign(
+    //   { id: user.rows[0].id, email },
+    //   process.env.JWT_TOKEN || "jwtsecret",
+    //   {
+    //     expiresIn: "1m",
+    //   }
+    // );
     const refresh_token = jwt.sign(
-      { id: user.rows[0].id, email },
+      { 
+        id: user.id, 
+        email,
+        role: user.role,
+      },
       process.env.REFRESH_TOKEN || "refreshsecret",
       {
         expiresIn: "1d",
@@ -91,11 +148,13 @@ app.post("/login", async (req, res) => {
     );
 
     const token = jwt.sign(
-      { id: user.rows[0].id, email },
-      process.env.JWT_TOKEN || "jwtsecret",
       {
-        expiresIn: "1m",
-      }
+        id: user.id,
+        email,
+        role: user.role,
+      },
+      process.env.JWT_TOKEN || "jwtsecret",
+      {}
     );
 
     res.cookie("refresh_token", refresh_token, {
@@ -105,7 +164,11 @@ app.post("/login", async (req, res) => {
 
     return res
       .status(200)
-      .json({ message: "Login successful", access_token: token });
+      .json({
+        message: "Login successful",
+        access_token: token,
+        role: user.role,
+      });
   } catch (error) {
     console.log(error);
     return res.status(500).json({ message: "Server Error" });
@@ -118,13 +181,16 @@ app.get("/profile", isAuthenticated, async (req, res) => {
   console.log(id);
 
   try {
-    const user = await pool.query("SELECT * FROM students WHERE id = $1", [id]);
+    const user = await User.findById(id);
+    // const user = await pool.query("SELECT * FROM students WHERE email = $1", [
+    //   email,
+    // ]);
 
-    if (user.rows.length <= 0) {
-      return res.status(404).json({ message: "User not found" });
+    if (!user) {
+      return res.status(400).json({ message: "user not found" });
     }
 
-    return res.status(200).json({ message: "User found", user: user.rows[0] });
+    return res.status(200).json({ message: "User found", user });
   } catch (error) {
     console.log(error);
     return res.status(500).json({ message: "Server Error" });
@@ -162,11 +228,29 @@ app.post("/refresh", async (req, res) => {
   }
 });
 
+// delete a user
+app.delete(
+  "/delete/:id",
+  isAuthenticated,
+  roleBasedAccess(["admin"]),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const user = await User.findByIdAndDelete(id);
+
+    if(!user) return res.status(404).json({ message: "User not found" });
+
+      return res.status(200).json({ message: "User deleted" });
+    } catch (error) {
+      console.log(error);
+      return res.status(500).json({ message: "Server Error" });
+    }
+  }
+);
+
 const port = process.env.PORT || 4567;
-app.listen(port, async () => {
+
+app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
-  //log pool connection options
-  await pool.connect().then(() => {
-    console.log("Connected to database");
-  });
 });

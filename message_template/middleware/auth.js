@@ -10,9 +10,8 @@ exports.isAuthenticated = (req, res, next) => {
 
     if (!decoded) return res.status(401).json({ message: "Authentication failed" });
 
-    console.log("=======================================");
+   
     req.user = decoded;
-    console.log("=======================================");
     next();
   } catch (error) {
     return res.status(401).json({ message: "Authentication failed 🔒🔒🔒🔒🔒🔒🔒🔒" });
