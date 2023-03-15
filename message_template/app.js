@@ -252,5 +252,5 @@ app.delete(
 const port = process.env.PORT || 4567;
 
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log(`Server up and running😂😂😂😂😂😂😂😂😂😂😂 on port ${port}`);
 });
